@@ -5,26 +5,19 @@ Receives files from a partner over SFTP and moves them to an FTP server, for FTP
 * The partner logs in with a password to an SFTP-only account, with no shell, locked in its own folder (chroot)
 * `relay.sh` (cron) uploads the files to FTP, keeping subfolders, and deletes them locally after a successful upload
 * Files and folders changed in the last 5 min are skipped, as they may still be uploading
+* Partial uploads (`*.part`, renamed by the client when complete) are skipped, and deleted after a day
 * If the FTP server is down, files wait locally until a later run
 * `relay.sh` logs to `logs/relay.log` and rotates it at 1 MB, keeping one old file
 
-## Setup
+## SFTP account
 
-Run as the user that will run the cron job (e.g. `pi`). Set the SFTP account name first:
+Run as the user that will run the relay cron job (e.g. `pi`). Set the SFTP account name first:
 
 ```bash
 SFTP_USER=partner
 ```
 
-### 1. Packages
-
-```bash
-sudo apt install lftp fail2ban
-```
-
-`fail2ban` blocks repeated failed logins. Its default `sshd` jail is enough.
-
-### 2. SFTP account
+### 1. Account and folders
 
 ```bash
 sudo useradd -m -d /srv/sftp/$SFTP_USER -s /usr/sbin/nologin $SFTP_USER
@@ -41,7 +34,7 @@ sudo usermod -aG $SFTP_USER $USER
 * `2775` (setgid): new files and folders in `upload/` belong to the account's group. With the `-u 0002` umask in `sshd_relay.conf` they are group-writable, so the cron user (in that group) can delete them.
 * Log out and back in, then check with `groups` that the account's group is listed.
 
-### 3. sshd
+### 2. sshd
 
 ```bash
 sed "s/<sftp user>/$SFTP_USER/g" sshd_relay.conf | sudo tee /etc/ssh/sshd_config.d/sftp_relay.conf
@@ -54,16 +47,29 @@ sudo systemctl reload ssh
 * `sshd -T -C` shows the settings that apply to the account. Expect `passwordauthentication yes`, `forcecommand internal-sftp -u 0002 -d /upload` and `chrootdirectory /srv/sftp/<sftp user>`.
 * Keep your current SSH session open until a new login works.
 
-Test from another computer:
+### 3. fail2ban
+
+```bash
+sudo apt install fail2ban
+```
+
+Blocks repeated failed logins. Its default `sshd` jail is enough.
+
+### 4. Test
+
+From another computer:
 
 ```bash
 sftp partner@<host>     # works, starts in /upload
 ssh partner@<host>      # refused
 ```
 
-### 4. Relay
+## Relay
+
+### 1. Install
 
 ```bash
+sudo apt install lftp
 git clone <this repo> ~/SFTP-relay
 cd ~/SFTP-relay
 cp .env.example .env
@@ -72,11 +78,23 @@ chmod 600 .env
 
 Set the real values in `.env`, replacing the placeholders. It is in `.gitignore`.
 
-Test: upload a file over SFTP, wait 5 min, run `./relay.sh` and check `logs/relay.log`, the FTP destination and that `upload/` is empty.
+### 2. Test
 
-### 5. Cron
+Upload a file over SFTP, then backdate it to skip the 5 min wait and run the relay:
 
 ```bash
+sudo touch -d '10 minutes ago' /srv/sftp/<sftp user>/upload/<file>
+./relay.sh
+cat logs/relay.log
+```
+
+The log should end with `done`, the file should be on the FTP server and `upload/` empty.
+
+### 3. Cron
+
+```bash
+# Moves files received over SFTP to the FTP server
+# Every 10 min
 */10 * * * * /usr/bin/flock -w 0 ~/sftp_relay.lock ~/SFTP-relay/relay.sh
 ```
 

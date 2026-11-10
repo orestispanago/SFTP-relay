@@ -1,6 +1,7 @@
 #!/bin/sh
 # Moves files received over SFTP to an FTP server, then removes emptied folders.
-# Skips files and folders changed in the last 5 min (still uploading).
+# Skips files and folders changed in the last 5 min (still uploading) and partial
+# uploads (*.part). Deletes *.part files older than a day (abandoned uploads).
 
 DIR=$(dirname "$(readlink -f "$0")")
 LOG="$DIR/logs/relay.log"
@@ -17,8 +18,9 @@ export LFTP_PASSWORD="$FTP_PASS"
 
 echo "$(date -u +%FT%TZ) start"
 if lftp --env-password -u "$FTP_USER" \
-    -e "mirror -R --Remove-source-files --older-than=now-5minutes $SRC_DIR $DST_DIR; quit" \
+    -e "mirror -R --Remove-source-files --older-than=now-5minutes --no-empty-dirs --exclude-glob '*.part' $SRC_DIR $DST_DIR; quit" \
     "$FTP_IP"; then
+    find "$SRC_DIR" -type f -name '*.part' -mmin +1440 -delete
     find "$SRC_DIR" -mindepth 1 -type d -empty -mmin +5 -delete
     echo "$(date -u +%FT%TZ) done"
 else
